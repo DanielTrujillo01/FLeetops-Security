@@ -23,6 +23,7 @@ from app.infrastructure.user_repository import UserRepository
 # Helpers
 # =============================================================================
 
+
 def _make_user_model(
     email: str = "emp@fleet.com",
     role: str = "EMPLEADO",
@@ -32,7 +33,11 @@ def _make_user_model(
     model.id = "model-uuid-1"
     model.email = email
     model.hashed_password = "$bcrypt$hash"
-    model.role = role
+
+    mock_role_relation = MagicMock()
+    mock_role_relation.name = role
+    model.role = mock_role_relation
+
     model.is_active = is_active
     model.created_at = datetime.now(timezone.utc)
     model.updated_at = datetime.now(timezone.utc)
@@ -70,8 +75,8 @@ def _make_repo(
 # _to_domain (static — tested indirectly via find_by_email)
 # =============================================================================
 
-class TestToDomain:
 
+class TestToDomain:
     def test_to_domain_maps_all_fields_correctly(self):
         # Arrange
         model = _make_user_model(email="x@y.com", role="ADMINISTRADOR", is_active=True)
@@ -94,8 +99,8 @@ class TestToDomain:
 # find_by_email
 # =============================================================================
 
-class TestFindByEmail:
 
+class TestFindByEmail:
     @pytest.mark.asyncio
     async def test_returns_user_from_redis_cache_on_hit(self):
         # Arrange — Redis returns cached JSON
@@ -201,15 +206,15 @@ class TestFindByEmail:
 # save
 # =============================================================================
 
-class TestSave:
 
+class TestSave:
     @pytest.mark.asyncio
     async def test_save_adds_model_to_session(self):
         # Arrange
         session = AsyncMock()
         session.add = MagicMock()
         session.flush = AsyncMock()
-        
+
         repo = _make_repo(session=session)
         user = _make_domain_user()
         # Act
@@ -237,8 +242,68 @@ class TestSave:
 # exists_by_email
 # =============================================================================
 
-class TestExistsByEmail:
 
+class TestFindById:
+    @pytest.mark.asyncio
+    async def test_returns_user_from_redis_cache_on_id_hit(self):
+        user = _make_domain_user()
+        cached_data = {
+            "id": user.id,
+            "email": user.email,
+            "hashed_password": user.hashed_password,
+            "role": user.role.value,
+            "is_active": user.is_active,
+            "created_at": user.created_at.isoformat(),
+            "updated_at": user.updated_at.isoformat(),
+        }
+        redis = AsyncMock()
+        redis.get = AsyncMock(return_value=json.dumps(cached_data))
+        redis.setex = AsyncMock()
+        repo = _make_repo(redis=redis)
+
+        result = await repo.find_by_id(user.id)
+
+        assert result is not None
+        assert result.id == user.id
+        repo._session.execute.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_queries_db_on_id_cache_miss(self):
+        redis = AsyncMock()
+        redis.get = AsyncMock(return_value=None)
+        redis.setex = AsyncMock()
+
+        model = _make_user_model()
+        session = AsyncMock()
+        mock_result = MagicMock()
+        mock_result.scalar_one_or_none.return_value = model
+        session.execute = AsyncMock(return_value=mock_result)
+
+        repo = _make_repo(session=session, redis=redis)
+
+        result = await repo.find_by_id("model-uuid-1")
+
+        assert result is not None
+        session.execute.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_returns_none_when_user_not_found_by_id(self):
+        redis = AsyncMock()
+        redis.get = AsyncMock(return_value=None)
+
+        session = AsyncMock()
+        mock_result = MagicMock()
+        mock_result.scalar_one_or_none.return_value = None
+        session.execute = AsyncMock(return_value=mock_result)
+
+        repo = _make_repo(session=session, redis=redis)
+
+        result = await repo.find_by_id("missing-id")
+
+        assert result is None
+
+
+class TestExistsByEmail:
     @pytest.mark.asyncio
     async def test_returns_true_when_user_exists(self):
         # Arrange
